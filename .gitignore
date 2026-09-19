@@ -163,3 +163,4 @@ cython_debug/
 
 # Project-specific settings
 .aider*
+docs/architecture/历史教训.md

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from typing import Any
@@ -74,17 +75,28 @@ class QdrantConnector:
         # Embed the document
         # ToDo: instead of embedding text explicitly, use `models.Document`,
         # it should unlock usage of server-side inference.
-        embeddings = await self._embedding_provider.embed_documents([entry.content])
+        dense_embeddings, sparse_embeddings = await asyncio.gather(
+            self._embedding_provider.embed_documents([entry.content]),
+            self._embedding_provider.embed_sparse([entry.content]),
+        )
 
         # Add to Qdrant
         vector_name = self._embedding_provider.get_vector_name()
+        sparse_vector_name = self._embedding_provider.get_sparse_vector_name()
+        sparse_indices, sparse_values = sparse_embeddings[0]
         payload = {"document": entry.content, METADATA_PATH: entry.metadata}
         await self._client.upsert(
             collection_name=collection_name,
             points=[
                 models.PointStruct(
                     id=uuid.uuid4().hex,
-                    vector={vector_name: embeddings[0]},
+                    vector={
+                        vector_name: dense_embeddings[0],
+                        sparse_vector_name: models.SparseVector(
+                            indices=sparse_indices,
+                            values=sparse_values,
+                        ),
+                    },
                     payload=payload,
                 )
             ],
@@ -112,21 +124,43 @@ class QdrantConnector:
         collection_exists = await self._client.collection_exists(collection_name)
         if not collection_exists:
             return []
+        await self._validate_collection_schema(collection_name)
 
         # Embed the query
         # ToDo: instead of embedding text explicitly, use `models.Document`,
         # it should unlock usage of server-side inference.
 
-        query_vector = await self._embedding_provider.embed_query(query)
+        query_vector, sparse_query_vectors = await asyncio.gather(
+            self._embedding_provider.embed_query(query),
+            self._embedding_provider.embed_sparse([query]),
+        )
         vector_name = self._embedding_provider.get_vector_name()
+        sparse_vector_name = self._embedding_provider.get_sparse_vector_name()
+        sparse_indices, sparse_values = sparse_query_vectors[0]
+        prefetch_limit = limit * 3
 
         # Search in Qdrant
         search_results = await self._client.query_points(
             collection_name=collection_name,
-            query=query_vector,
-            using=vector_name,
+            prefetch=[
+                models.Prefetch(
+                    query=query_vector,
+                    using=vector_name,
+                    limit=prefetch_limit,
+                    filter=query_filter,
+                ),
+                models.Prefetch(
+                    query=models.SparseVector(
+                        indices=sparse_indices,
+                        values=sparse_values,
+                    ),
+                    using=sparse_vector_name,
+                    limit=prefetch_limit,
+                    filter=query_filter,
+                ),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
             limit=limit,
-            query_filter=query_filter,
         )
 
         return [
@@ -143,28 +177,56 @@ class QdrantConnector:
         :param collection_name: The name of the collection to ensure exists.
         """
         collection_exists = await self._client.collection_exists(collection_name)
-        if not collection_exists:
-            # Create the collection with the appropriate vector size
-            vector_size = self._embedding_provider.get_vector_size()
+        if collection_exists:
+            await self._validate_collection_schema(collection_name)
+            return
 
-            # Use the vector name as defined in the embedding provider
-            vector_name = self._embedding_provider.get_vector_name()
-            await self._client.create_collection(
-                collection_name=collection_name,
-                vectors_config={
-                    vector_name: models.VectorParams(
-                        size=vector_size,
-                        distance=models.Distance.COSINE,
-                    )
-                },
+        # Create the collection with the appropriate vector size
+        vector_size = self._embedding_provider.get_vector_size()
+
+        # Use the vector names as defined in the embedding provider
+        vector_name = self._embedding_provider.get_vector_name()
+        sparse_vector_name = self._embedding_provider.get_sparse_vector_name()
+        await self._client.create_collection(
+            collection_name=collection_name,
+            vectors_config={
+                vector_name: models.VectorParams(
+                    size=vector_size,
+                    distance=models.Distance.COSINE,
+                )
+            },
+            sparse_vectors_config={
+                sparse_vector_name: models.SparseVectorParams(
+                    modifier=models.Modifier.IDF,
+                )
+            },
+        )
+
+        # Create payload indexes if configured
+        if self._field_indexes:
+            for field_name, field_type in self._field_indexes.items():
+                await self._client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name=field_name,
+                    field_schema=field_type,
+                )
+
+    async def _validate_collection_schema(self, collection_name: str):
+        """Validate that an existing collection supports hybrid retrieval."""
+        collection = await self._client.get_collection(collection_name)
+        params = collection.config.params
+        dense_vectors = params.vectors
+        sparse_vectors = params.sparse_vectors or {}
+        vector_name = self._embedding_provider.get_vector_name()
+        sparse_vector_name = self._embedding_provider.get_sparse_vector_name()
+
+        has_dense_vector = (
+            isinstance(dense_vectors, dict) and vector_name in dense_vectors
+        )
+        has_sparse_vector = sparse_vector_name in sparse_vectors
+        if not has_dense_vector or not has_sparse_vector:
+            raise ValueError(
+                f"Collection '{collection_name}' is not configured for hybrid "
+                "dense + BM25 retrieval. Create a new collection and re-import "
+                "the existing documents."
             )
-
-            # Create payload indexes if configured
-
-            if self._field_indexes:
-                for field_name, field_type in self._field_indexes.items():
-                    await self._client.create_payload_index(
-                        collection_name=collection_name,
-                        field_name=field_name,
-                        field_schema=field_type,
-                    )
