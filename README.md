@@ -14,6 +14,10 @@ This repository is an example of how to create a MCP server for [Qdrant](https:/
 An official Model Context Protocol server for keeping and retrieving memories in the Qdrant vector search engine.
 It acts as a semantic memory layer on top of the Qdrant database.
 
+Stored text is indexed with both a dense embedding and a BM25 sparse embedding.
+Searches run both retrieval methods and combine their rankings with Reciprocal Rank
+Fusion (RRF).
+
 ## Components
 
 ### Tools
@@ -49,10 +53,19 @@ Configuration is done via environment variables. The only command-line argument 
 | `QDRANT_LOCAL_PATH`      | Path to the local Qdrant database (alternative to `QDRANT_URL`)     | None                                                              |
 | `EMBEDDING_PROVIDER`     | Embedding provider to use (currently only "fastembed" is supported) | `fastembed`                                                       |
 | `EMBEDDING_MODEL`        | Name of the embedding model to use                                  | `sentence-transformers/all-MiniLM-L6-v2`                          |
+| `SPARSE_EMBEDDING_MODEL` | Name of the sparse embedding model used for lexical search          | `Qdrant/bm25`                                                     |
 | `TOOL_STORE_DESCRIPTION` | Custom description for the store tool                               | See default in [`settings.py`](src/mcp_server_qdrant/settings.py) |
 | `TOOL_FIND_DESCRIPTION`  | Custom description for the find tool                                | See default in [`settings.py`](src/mcp_server_qdrant/settings.py) |
 | `QDRANT_SEARCH_LIMIT`    | Maximum number of results to return from search                     | `10`                                                              |
 | `QDRANT_READ_ONLY`       | Enable read-only mode (disables `qdrant-store` tool)                | `false`                                                           |
+
+### Migrating existing collections
+
+Collections created by earlier versions contain only dense vectors and cannot be
+queried with the hybrid retrieval pipeline. Create a new collection and re-import
+the existing documents so that every point receives both its dense and BM25 sparse
+vectors. The server validates existing collection schemas and reports an explicit
+error instead of querying an incompatible dense-only collection.
 
 ### FastMCP Environment Variables
 

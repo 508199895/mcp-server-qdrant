@@ -1,25 +1,28 @@
 import asyncio
 
-from fastembed import TextEmbedding
+from fastembed import SparseTextEmbedding, TextEmbedding
 from fastembed.common.model_description import DenseModelDescription
 
-from mcp_server_qdrant.embeddings.base import EmbeddingProvider
+from mcp_server_qdrant.embeddings.base import EmbeddingProvider, SparseEmbedding
 
 
 class FastEmbedProvider(EmbeddingProvider):
     """
     FastEmbed implementation of the embedding provider.
-    :param model_name: The name of the FastEmbed model to use.
+    :param model_name: The name of the dense FastEmbed model to use.
+    :param sparse_model_name: The name of the sparse FastEmbed model to use.
     """
 
-    def __init__(self, model_name: str):
+    def __init__(self, model_name: str, sparse_model_name: str = "Qdrant/bm25"):
         self.model_name = model_name
+        self.sparse_model_name = sparse_model_name
         self.embedding_model = TextEmbedding(model_name)
+        self.sparse_embedding_model = SparseTextEmbedding(sparse_model_name)
 
     async def embed_documents(self, documents: list[str]) -> list[list[float]]:
         """Embed a list of documents into vectors."""
         # Run in a thread pool since FastEmbed is synchronous
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         embeddings = await loop.run_in_executor(
             None, lambda: list(self.embedding_model.passage_embed(documents))
         )
@@ -28,16 +31,27 @@ class FastEmbedProvider(EmbeddingProvider):
     async def embed_query(self, query: str) -> list[float]:
         """Embed a query into a vector."""
         # Run in a thread pool since FastEmbed is synchronous
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         embeddings = await loop.run_in_executor(
             None, lambda: list(self.embedding_model.query_embed([query]))
         )
         return embeddings[0].tolist()
 
+    async def embed_sparse(self, texts: list[str]) -> list[SparseEmbedding]:
+        """Embed texts into sparse vectors."""
+        loop = asyncio.get_running_loop()
+        embeddings = await loop.run_in_executor(
+            None, lambda: list(self.sparse_embedding_model.embed(texts))
+        )
+        return [
+            (embedding.indices.tolist(), embedding.values.tolist())
+            for embedding in embeddings
+        ]
+
     def get_vector_name(self) -> str:
         """
-        Return the name of the vector for the Qdrant collection.
-        Important: This is compatible with the FastEmbed logic used before 0.6.0.
+        Return the name of the densevector for the Qdrant collection.
+        Important: This is compatible with the FastEmbed logic used before 0.7.3.
         """
         model_name = self.embedding_model.model_name.split("/")[-1].lower()
         return f"fast-{model_name}"
@@ -48,3 +62,8 @@ class FastEmbedProvider(EmbeddingProvider):
             self.embedding_model._get_model_description(self.model_name)
         )
         return model_description.dim
+
+    def get_sparse_vector_name(self) -> str:
+        """Return the name of the sparse vector used for the Qdrant collection."""
+        model_name = self.sparse_model_name.split("/")[-1].lower()
+        return f"fast-{model_name}"

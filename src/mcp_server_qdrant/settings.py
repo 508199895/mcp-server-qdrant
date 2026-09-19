@@ -46,6 +46,10 @@ class EmbeddingProviderSettings(BaseSettings):
         default="sentence-transformers/all-MiniLM-L6-v2",
         validation_alias="EMBEDDING_MODEL",
     )
+    sparse_model_name: str = Field(
+        default="Qdrant/bm25",
+        validation_alias="SPARSE_EMBEDDING_MODEL",
+    )
 
 
 class FilterableField(BaseModel):
@@ -82,7 +86,7 @@ class QdrantSettings(BaseSettings):
         default=None, validation_alias="COLLECTION_NAME"
     )
     local_path: str | None = Field(default=None, validation_alias="QDRANT_LOCAL_PATH")
-    search_limit: int = Field(default=10, validation_alias="QDRANT_SEARCH_LIMIT")
+    search_limit: int = Field(default=3, validation_alias="QDRANT_SEARCH_LIMIT")
     read_only: bool = Field(default=False, validation_alias="QDRANT_READ_ONLY")
 
     filterable_fields: list[FilterableField] | None = Field(default=None)
